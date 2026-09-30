@@ -10,6 +10,8 @@ TypeScript 5.8 + Three.js 0.180 的可复用骨骼动画库：分层混合（基
 - `npm run example:target` — 运行“循环根运动行走 + 手部贴合固定世界目标 + 世界蒙皮”完整示例
 - `npm run example:retarget` — 运行“源片段重定向到异构目标骨架 + 根运动播放 + 世界 IK + 世界蒙皮”完整示例
 - `npm run example:face` — 构建并运行“身体动作 + 微笑/眨眼/口型”，导出 GLB 后用 `GLTFLoader` 回载验证
+- `npm run page` — 启动浏览器演示页（Vite）：两个独立角色实例，点击运动中的表面放置徽章挂件
+- `npm run page:build` — 构建页面到 `dist-page/`；`npm run check:page` 仅做页面类型检查
 
 ## 数据约定
 
@@ -27,6 +29,7 @@ TypeScript 5.8 + Three.js 0.180 的可复用骨骼动画库：分层混合（基
 - **世界 IK**（`solveWorldTwoBoneIk`）：世界目标与弯曲参考点经当前角色刚体矩阵的逆变换转入角色空间后复用 `solveTwoBoneIk`，再把末端变换回世界，返回世界末端位置、可达性与残差。角色矩阵仅允许单位缩放；目标与根重合时优先沿用当前弯曲平面。
 - **蒙皮**（`skinVertices` / `skinVerticesToWorld`）：输入绑定姿态顶点与每顶点至多 4 个骨骼权重；非负权重归一化后做线性混合蒙皮。前者输出角色局部空间位置，后者在角色空间蒙皮后对每个顶点只施加**一次**角色矩阵得到世界坐标，不会把角色世界矩阵重复乘入骨骼矩阵。零总权重顶点保持原位置；未知骨骼与负权重抛错。不修改任何输入，输入与已返回结果不会被后续推进改写，多实例互不共享状态。
 - **表情 CPU 求值**（`sampleMorphWeights` / `applyMorphTargets` / `skinTriangleMesh` / `evaluateTriangleMesh`）：可先采样片段权重，再把加权位移加到绑定顶点，最后把形变后的绑定顶点交给现有骨骼姿态执行线性混合蒙皮；因此可直接接 `evaluatePose`、分层混合、根运动播放器或 IK 输出的 `worldMatrices`。输入始终只读，返回新数组，不同角色和不同调用不共享中间状态。
+- **表面挂件**（`transformSurfacePositions` / `pickSurfaceTriangle` / `evaluateSurfaceAttachment` / `AttachmentStore`）：复用“先形变后蒙皮”的角色空间结果，再经 `SurfaceTransform`（平移 + 单位四元数旋转 + **正的非均匀缩放**）得到世界变形顶点；渲染、拾取与挂件求值使用同一份逐帧结果，输入不被修改、实例间不共享状态。拾取从屏幕射线（原点 + 方向）在当前世界顶点上做 Moller-Trumbore 求交：只命中最近**正面**三角形，跳过退化面，空白返回 null，返回三角形序号与重心坐标。挂件只记录「角色 + 三角形序号 + 重心坐标 + 世界单位法向偏移」，每帧重算世界位置；切向取变形后首条边（v0→v1），法向按顶点绕序 (v1-v0)×(v2-v0)，偏移沿世界单位法向。暂停、拖动时间、重新播放都不影响贴附；面退化时求值返回 null（页面隐藏并提示），恢复后继续，绝不跳到其他面。`AttachmentStore` 支持选择、删除、调偏移，导出 JSON 含各角色顶点数与完整索引序列；加载时逐角色做拓扑校验，错配、越界、非法重心坐标或非有限数整体拒绝并保留当前挂件。
 - **动作重定向**（`RetargetPlan` / `retargetPose` / `bakeRetargetedClip`）：`RetargetPlan` 接收源骨架、目标骨架与根相对应的一一骨骼映射（`{sourceBoneId, targetBoneId}`），校验双方均为单根、绑定单位缩放、相同坐标轴约定，映射不含未知骨/重复骨、必须包含双方顶层根且保持祖先/后代次序；目标允许在映射骨之间插入未映射中间骨。计划可重复使用，构造与转换均不改写输入。
   - 姿态转换：映射骨的旋转差为「源当前全局旋转 × 源绑定全局旋转⁻¹」，再左乘目标绑定全局旋转得到目标当前全局旋转，按目标当前父全局旋转还原局部旋转；因此源绑定姿态必定映成目标绑定姿态，且目标自身的绑定朝向偏移被保留。未映射骨保留目标绑定局部旋转，但按目标求值顺序继承已运动父级的全局旋转。非根平移与缩放恒保留目标绑定值（目标骨长不变）。
   - 根运动：根旋转同样按映射规则转换；根平移 = 目标绑定根位置 +（源当前根位置 − 源绑定根位置）× `rootTranslationScale`（有限正倍率，缺省 1），根缩放保留目标绑定值。`retargetPose` 返回全新 `Map`，后续转换不会改写先前结果。
@@ -139,6 +142,15 @@ const player = new RootMotionPlayer({
 
 完整示例见 `examples/retarget.ts`（`npm run example:retarget`）。
 
+## 浏览器演示页
+
+`npm run page` 启动 Vite 开发服务器（默认 http://localhost:5173 ）：
+
+- 两个完全独立的角色实例（各自骨架/网格/片段，不同的世界平移、旋转与正的非均匀缩放）循环播放“行走 + 挥手 + 微笑/眨眼/惊讶”；
+- 左键拖动旋转视角，单击运动中的角色表面在最近正面三角形处放置徽章挂件（空白处不创建）；
+- 徽章每帧随变形表面重算位置与朝向（切向 = 首条边，法向 = 顶点绕序），暂停、拖动时间轴、重新播放均保持贴附；
+- 右侧面板可选中/删除挂件、用滑杆调整沿世界法向的偏移，并导出/加载带拓扑校验的挂件 JSON（加载失败保留现状）。
+
 把转换后的目标骨架、绑定网格和多个烘焙片段打包给 Blender、Maya、Unity、Unreal 等支持 glTF 2.0 的工具：
 
 ```ts
@@ -170,6 +182,9 @@ await fs.writeFile('character.glb', Buffer.from(glb));
 - `src/skinning.ts` — CPU 线性混合蒙皮
 - `src/morph.ts` — 形变目标校验、权重采样、目标叠加与先形变后蒙皮
 - `src/world-skin.ts` — 蒙皮结果到世界顶点（角色矩阵只应用一次）
+- `src/surface.ts` — 角色世界摆放（含非均匀缩放）、变形面射线拾取与挂件逐帧求值
+- `src/attachment-store.ts` — 挂件集合：选择/删除/偏移与带拓扑校验的 JSON 导出加载
+- `page/` + `index.html` — 浏览器演示页（`npm run page`）：双独立实例、点击放置徽章、时间轴与 JSON 导入导出
 - `src/retarget-plan.ts` — 重定向计划：映射/骨架校验与绑定全局旋转预计算
 - `src/retarget-pose.ts` — 完整源局部姿态到完整目标局部姿态的层级转换
 - `src/retarget-clip.ts` — 源片段按指定时刻烘焙为目标 `AnimationClip`

@@ -240,3 +240,30 @@ test('可导出重定向烘焙片段并保留完整层级、片段名和根位�
   assert.ok(Math.abs(hips.position.y - 0.8) < 1e-6);
   assert.ok(gltf.scene.getObjectByName('j_mid'));
 });
+
+test('骨骼动画平移/旋转/缩放超出 Float32 范围时拒绝导出', () => {
+  const overflow = 3.5e38; // 有限但超过 FLOAT32_MAX
+  const makeClip = (channel: 'translations' | 'rotations' | 'scales', value: number[]) => ({
+    name: 'overflow-' + channel,
+    duration: 1,
+    tracks: [{
+      boneId: 'hips',
+      [channel]: [{ time: 0, value }, { time: 1, value }],
+    }],
+  });
+  assert.throws(
+    () => exportCharacterGlb({ skeleton: sk, mesh, clips: [makeClip('translations', [0, overflow, 0])] }),
+    /FLOAT32/,
+  );
+  assert.throws(
+    () => exportCharacterGlb({ skeleton: sk, mesh, clips: [makeClip('scales', [overflow, 1, 1])] }),
+    /FLOAT32/,
+  );
+  assert.throws(
+    () => exportCharacterGlb({ skeleton: sk, mesh, clips: [makeClip('rotations', [0, 0, 0, overflow])] }),
+    /FLOAT32|单位四元数/, // 旋转先被片段校验拦截，平移/缩放由导出前 FLOAT32 校验拦截
+  );
+  // 边界内的最大值仍可导出
+  const ok = makeClip('translations', [0, 3.4e38, 0]);
+  assert.ok(exportCharacterGlb({ skeleton: sk, mesh, clips: [ok] }).byteLength > 0);
+});
